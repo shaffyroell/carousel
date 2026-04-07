@@ -100,7 +100,8 @@ def convert():
     logger.info(f"[{VERSION}] Content-Type: {content_type}, Body: {len(request.data)} bytes")
 
     html = extract_html(request)
-    logger.info(f"HTML length: {len(html)}, has slide: {'class=\"slide\"' in html or 'slide slide-' in html}")
+    has_slide = 'class="slide"' in html or 'slide slide-' in html
+    logger.info(f"HTML length: {len(html)}, has slide: {has_slide}")
 
     if not html or len(html) < 50:
         return jsonify({"error": "Empty or missing HTML"}), 400
