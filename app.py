@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v4"
+VERSION = "v5"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -38,8 +38,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
                 device_scale_factor=2
             )
 
-            # Use set_content instead of file:// to avoid temp file issues
-            await page.set_content(html, wait_until="networkidle", timeout=30000)
+            await page.set_content(html, wait_until="domcontentloaded", timeout=30000)
 
             slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
             logger.info(f"Slide count via JS: {slide_count}")
@@ -67,20 +66,21 @@ async def html_to_pdf_bytes(html: str) -> bytes:
     return pdf_bytes
 
 
+def extract_html(request):
+    content_type = request.content_type or ""
+    if "application/json" in content_type:
+        data = request.get_json(force=True, silent=True)
+        if data and "html" in data:
+            return data["html"]
+    return request.data.decode("utf-8")
+
+
 @app.route("/convert", methods=["POST"])
 def convert():
     content_type = request.content_type or ""
     logger.info(f"[{VERSION}] Received request. Content-Type: {content_type}, Body size: {len(request.data)} bytes")
 
-    if "application/json" in content_type:
-        data = request.get_json(force=True, silent=True)
-        if data and "html" in data:
-            html = data["html"]
-        else:
-            html = request.data.decode("utf-8")
-    else:
-        html = request.data.decode("utf-8")
-
+    html = extract_html(request)
     has_slide = 'class="slide"' in html or "class='slide'" in html
     logger.info(f"HTML length: {len(html)}, Has .slide: {has_slide}")
 
@@ -105,13 +105,7 @@ def convert():
 
 @app.route("/debug", methods=["POST"])
 def debug():
-    """Returns what Playwright actually sees — use to diagnose 422s."""
-    content_type = request.content_type or ""
-    if "application/json" in content_type:
-        data = request.get_json(force=True, silent=True)
-        html = data.get("html", "") if data else request.data.decode("utf-8")
-    else:
-        html = request.data.decode("utf-8")
+    html = extract_html(request)
 
     async def _debug(html):
         async with async_playwright() as p:
@@ -121,7 +115,7 @@ def debug():
                     viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
                     device_scale_factor=2
                 )
-                await page.set_content(html, wait_until="networkidle", timeout=30000)
+                await page.set_content(html, wait_until="domcontentloaded", timeout=30000)
                 slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
                 body_preview = await page.evaluate("document.body.innerHTML.substring(0, 1000)")
                 title = await page.title()
