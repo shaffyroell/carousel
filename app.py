@@ -10,10 +10,14 @@ POST /convert
 import asyncio
 import img2pdf
 import tempfile
+import logging
 from pathlib import Path
 from flask import Flask, request, send_file, jsonify
 from playwright.async_api import async_playwright
 import io
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -25,25 +29,32 @@ async def html_to_pdf_bytes(html: str) -> bytes:
     png_buffers = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(args=["--no-sandbox"])
         page = await browser.new_page(
             viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
             device_scale_factor=2
         )
 
-        # Write HTML to a temp file so local assets and fonts resolve correctly
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
             f.write(html)
             tmp_path = Path(f.name)
+
+        logger.info(f"Wrote HTML to {tmp_path} ({len(html)} chars)")
 
         await page.goto(f"file://{tmp_path.resolve()}")
         await page.wait_for_load_state("networkidle", timeout=20000)
 
+        slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
+        logger.info(f"Slide count via JS: {slide_count}")
+
         slides = await page.query_selector_all(".slide")
+        logger.info(f"Slides found via Playwright: {len(slides)}")
 
         if not slides:
+            body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
+            logger.error(f"No slides found. Body preview: {body_html}")
             await browser.close()
-            raise ValueError("No .slide elements found in HTML.")
+            raise ValueError(f"No .slide elements found. Body preview: {body_html}")
 
         for i, slide in enumerate(slides):
             png_bytes = await slide.screenshot(
@@ -55,6 +66,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
                 }
             )
             png_buffers.append(png_bytes)
+            logger.info(f"Slide {i+1} screenshotted")
 
         await browser.close()
         tmp_path.unlink(missing_ok=True)
@@ -69,18 +81,29 @@ async def html_to_pdf_bytes(html: str) -> bytes:
 
 @app.route("/convert", methods=["POST"])
 def convert():
-    data = request.get_json(force=True)
+    content_type = request.content_type or ""
+    logger.info(f"Received request. Content-Type: {content_type}, Body size: {len(request.data)} bytes")
 
-    if not data or "html" not in data:
-        return jsonify({"error": "Missing 'html' field in request body"}), 400
+    if "application/json" in content_type:
+        data = request.get_json(force=True, silent=True)
+        if data and "html" in data:
+            html = data["html"]
+        else:
+            html = request.data.decode("utf-8")
+    else:
+        html = request.data.decode("utf-8")
 
-    html = data["html"]
+    logger.info(f"HTML length: {len(html)}, Has .slide: {'class=\"slide\"' in html or \"class='slide'\" in html}")
+
+    if not html or len(html) < 50:
+        return jsonify({"error": "Empty or missing HTML"}), 400
 
     try:
         pdf_bytes = asyncio.run(html_to_pdf_bytes(html))
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
+        logger.exception("Conversion failed")
         return jsonify({"error": f"Conversion failed: {str(e)}"}), 500
 
     return send_file(
