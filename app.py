@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v16"
+VERSION = "v17"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -43,6 +43,7 @@ async def render_page(html: str):
     browser = await p.chromium.launch(args=CHROMIUM_ARGS)
     page = await browser.new_page(
         viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
+        device_scale_factor=2,
     )
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False,
                                      mode="w", encoding="utf-8") as f:
