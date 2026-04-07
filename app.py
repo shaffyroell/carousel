@@ -87,7 +87,14 @@ def convert():
     if "application/json" in content_type:
         data = request.get_json(force=True, silent=True)
         if data and "html" in data:
+            # {"html": "..."}
             html = data["html"]
+        elif isinstance(data, list) and data and "content" in data[0]:
+            # n8n/Claude API format: [{"content": [{"type": "text", "text": "...html..."}]}]
+            html = next(
+                (c["text"] for c in data[0]["content"] if c.get("type") == "text"),
+                request.data.decode("utf-8")
+            )
         else:
             html = request.data.decode("utf-8")
     else:
