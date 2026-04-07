@@ -103,6 +103,44 @@ def convert():
     )
 
 
+@app.route("/debug", methods=["POST"])
+def debug():
+    """Returns what Playwright actually sees — use to diagnose 422s."""
+    content_type = request.content_type or ""
+    if "application/json" in content_type:
+        data = request.get_json(force=True, silent=True)
+        html = data.get("html", "") if data else request.data.decode("utf-8")
+    else:
+        html = request.data.decode("utf-8")
+
+    async def _debug(html):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                page = await browser.new_page(
+                    viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
+                    device_scale_factor=2
+                )
+                await page.set_content(html, wait_until="networkidle", timeout=30000)
+                slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
+                body_preview = await page.evaluate("document.body.innerHTML.substring(0, 1000)")
+                title = await page.title()
+                return {"slide_count": slide_count, "body_preview": body_preview, "title": title}
+            finally:
+                await browser.close()
+
+    try:
+        result = asyncio.run(_debug(html))
+        return jsonify({
+            "version": VERSION,
+            "html_length": len(html),
+            "has_slide_class": 'class="slide"' in html or "class='slide'" in html,
+            **result
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "version": VERSION}), 200
