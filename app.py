@@ -9,9 +9,7 @@ POST /convert
 
 import asyncio
 import img2pdf
-import tempfile
 import logging
-from pathlib import Path
 from flask import Flask, request, send_file, jsonify
 from playwright.async_api import async_playwright
 import io
@@ -21,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+VERSION = "v4"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -39,35 +38,24 @@ async def html_to_pdf_bytes(html: str) -> bytes:
                 device_scale_factor=2
             )
 
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-                    f.write(html)
-                    tmp_path = Path(f.name)
+            # Use set_content instead of file:// to avoid temp file issues
+            await page.set_content(html, wait_until="networkidle", timeout=30000)
 
-                logger.info(f"Wrote HTML to {tmp_path} ({len(html)} chars)")
+            slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
+            logger.info(f"Slide count via JS: {slide_count}")
 
-                await page.goto(f"file://{tmp_path.resolve()}")
-                await page.wait_for_load_state("networkidle", timeout=20000)
+            slides = await page.query_selector_all(".slide")
+            logger.info(f"Slides found via Playwright: {len(slides)}")
 
-                slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
-                logger.info(f"Slide count via JS: {slide_count}")
+            if not slides:
+                body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
+                logger.error(f"No slides found. Body preview: {body_html}")
+                raise ValueError(f"No .slide elements found. Body preview: {body_html}")
 
-                slides = await page.query_selector_all(".slide")
-                logger.info(f"Slides found via Playwright: {len(slides)}")
-
-                if not slides:
-                    body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
-                    logger.error(f"No slides found. Body preview: {body_html}")
-                    raise ValueError(f"No .slide elements found. Body preview: {body_html}")
-
-                for i, slide in enumerate(slides):
-                    png_bytes = await slide.screenshot()
-                    png_buffers.append(png_bytes)
-                    logger.info(f"Slide {i+1} screenshotted")
-            finally:
-                if tmp_path is not None:
-                    tmp_path.unlink(missing_ok=True)
+            for i, slide in enumerate(slides):
+                png_bytes = await slide.screenshot()
+                png_buffers.append(png_bytes)
+                logger.info(f"Slide {i+1} screenshotted")
         finally:
             await browser.close()
 
@@ -82,7 +70,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
 @app.route("/convert", methods=["POST"])
 def convert():
     content_type = request.content_type or ""
-    logger.info(f"Received request. Content-Type: {content_type}, Body size: {len(request.data)} bytes")
+    logger.info(f"[{VERSION}] Received request. Content-Type: {content_type}, Body size: {len(request.data)} bytes")
 
     if "application/json" in content_type:
         data = request.get_json(force=True, silent=True)
@@ -95,7 +83,6 @@ def convert():
 
     has_slide = 'class="slide"' in html or "class='slide'" in html
     logger.info(f"HTML length: {len(html)}, Has .slide: {has_slide}")
-    logger.info(f"HTML preview (first 300 chars): {html[:300]}")
 
     if not html or len(html) < 50:
         return jsonify({"error": "Empty or missing HTML"}), 400
@@ -118,7 +105,7 @@ def convert():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok", "version": VERSION}), 200
 
 
 if __name__ == "__main__":
