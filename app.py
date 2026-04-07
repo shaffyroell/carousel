@@ -13,6 +13,7 @@ import os
 import tempfile
 from flask import Flask, request, send_file, jsonify
 from playwright.async_api import async_playwright
+from PIL import Image
 import io
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v13"
+VERSION = "v14"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -63,6 +64,7 @@ async def render_page(html: str):
 
 async def html_to_pdf_bytes(html: str) -> bytes:
     page, browser, pw = await render_page(html)
+    png_buffers = []
     try:
         slide_count = await page.evaluate(
             "document.querySelectorAll('.slide').length"
@@ -75,35 +77,39 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             )
             raise ValueError(f"No .slide elements found. Body: {body}")
 
-        # Inject print styles so each .slide becomes its own PDF page
-        await page.evaluate(f"""() => {{
-            const s = document.createElement('style');
-            s.textContent = `
-                @page {{ size: {SLIDE_WIDTH}px {SLIDE_HEIGHT}px; margin: 0; }}
-                body {{ margin: 0; padding: 0; }}
-                .slide {{
-                    page-break-after: always;
-                    break-after: page;
-                    width: {SLIDE_WIDTH}px !important;
-                    height: {SLIDE_HEIGHT}px !important;
-                    overflow: hidden;
-                    box-sizing: border-box;
-                    display: block;
-                }}
-            `;
-            document.head.appendChild(s);
-        }}""")
-
-        pdf_bytes = await page.pdf(
-            width=f"{SLIDE_WIDTH}px",
-            height=f"{SLIDE_HEIGHT}px",
-            print_background=True,
-        )
-        logger.info(f"PDF generated: {len(pdf_bytes)} bytes for {slide_count} slides")
-        return pdf_bytes
+        for i in range(slide_count):
+            await page.evaluate(f"window.scrollTo(0, {i * SLIDE_HEIGHT})")
+            await page.evaluate(
+                "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
+            )
+            png = await page.screenshot(
+                clip={"x": 0, "y": 0, "width": SLIDE_WIDTH, "height": SLIDE_HEIGHT}
+            )
+            png_buffers.append(png)
+            logger.info(f"Slide {i + 1}/{slide_count} captured ({len(png)} bytes)")
     finally:
         await browser.close()
         await pw.stop()
+
+    # Convert PNGs to PDF using Pillow
+    images = []
+    for b in png_buffers:
+        img = Image.open(io.BytesIO(b))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        images.append(img)
+
+    out = io.BytesIO()
+    images[0].save(
+        out,
+        format="PDF",
+        save_all=True,
+        append_images=images[1:],
+        resolution=144,
+    )
+    pdf_bytes = out.getvalue()
+    logger.info(f"PDF built: {len(pdf_bytes)} bytes, {len(images)} pages")
+    return pdf_bytes
 
 
 def extract_html(request):
