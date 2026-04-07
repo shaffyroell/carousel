@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v8"
+VERSION = "v9"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -53,19 +53,15 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             logger.info(f"Slides found via Playwright: {len(slides)}")
 
             for i, slide in enumerate(slides):
-                # Scroll precisely to this slide's Y position, wait for repaint,
-                # then screenshot the viewport (which now shows exactly this slide).
-                bbox = await slide.bounding_box()
-                await page.evaluate(f"window.scrollTo(0, {int(bbox['y'])})")
-                await page.wait_for_timeout(300)
-                png_bytes = await page.screenshot(clip={
-                    "x": 0,
-                    "y": 0,
-                    "width": SLIDE_WIDTH,
-                    "height": SLIDE_HEIGHT,
-                })
+                # bounding_box() returns viewport-relative coords — unusable after
+                # scrolling. Compute absolute Y directly from slide index instead.
+                y = i * SLIDE_HEIGHT
+                await page.evaluate(f"window.scrollTo(0, {y})")
+                # Wait for two rAF cycles to guarantee Chromium has repainted
+                await page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+                png_bytes = await slide.screenshot()
                 png_buffers.append(png_bytes)
-                logger.info(f"Slide {i+1} screenshotted at y={int(bbox['y'])}")
+                logger.info(f"Slide {i+1} screenshotted at y={y}")
         finally:
             await browser.close()
 
