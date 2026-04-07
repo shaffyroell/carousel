@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v7"
+VERSION = "v8"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -53,11 +53,11 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             logger.info(f"Slides found via Playwright: {len(slides)}")
 
             for i, slide in enumerate(slides):
-                # Scroll each slide to the top of the viewport, then screenshot.
-                # Expanding the viewport to full page height causes Chromium to
-                # fail rendering at 2x DPR (canvas too large → blank output).
-                await slide.scroll_into_view_if_needed()
-                await page.wait_for_timeout(100)
+                # Scroll precisely to this slide's Y position, wait for repaint,
+                # then screenshot the viewport (which now shows exactly this slide).
+                bbox = await slide.bounding_box()
+                await page.evaluate(f"window.scrollTo(0, {int(bbox['y'])})")
+                await page.wait_for_timeout(300)
                 png_bytes = await page.screenshot(clip={
                     "x": 0,
                     "y": 0,
@@ -65,7 +65,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
                     "height": SLIDE_HEIGHT,
                 })
                 png_buffers.append(png_bytes)
-                logger.info(f"Slide {i+1} screenshotted")
+                logger.info(f"Slide {i+1} screenshotted at y={int(bbox['y'])}")
         finally:
             await browser.close()
 
