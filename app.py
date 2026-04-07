@@ -93,7 +93,8 @@ def convert():
     else:
         html = request.data.decode("utf-8")
 
-    logger.info(f"HTML length: {len(html)}, Has .slide: {'class=\"slide\"' in html or \"class='slide'\" in html}")
+    has_slide = 'class="slide"' in html or "class='slide'" in html
+    logger.info(f"HTML length: {len(html)}, Has .slide: {has_slide}")
 
     if not html or len(html) < 50:
         return jsonify({"error": "Empty or missing HTML"}), 400
