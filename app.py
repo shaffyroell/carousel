@@ -8,6 +8,7 @@ POST /convert
 """
 
 import asyncio
+import base64
 import logging
 import os
 import tempfile
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v15"
+VERSION = "v16"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -106,7 +107,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
     c.save()
     pdf_bytes = out.getvalue()
     logger.info(f"PDF built: {len(pdf_bytes)} bytes, {len(png_buffers)} pages")
-    return pdf_bytes
+    return pdf_bytes, len(png_buffers)
 
 
 def extract_html(request):
@@ -131,12 +132,19 @@ def convert():
         return jsonify({"error": "Empty or missing HTML"}), 400
 
     try:
-        pdf_bytes = asyncio.run(html_to_pdf_bytes(html))
+        pdf_bytes, slide_count = asyncio.run(html_to_pdf_bytes(html))
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
         logger.exception("Conversion failed")
         return jsonify({"error": f"Conversion failed: {str(e)}"}), 500
+
+    # ?b64=1 returns JSON with base64-encoded PDF — safe for n8n binary handling
+    if request.args.get("b64") == "1":
+        return jsonify({
+            "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+            "pages": slide_count,
+        })
 
     return send_file(
         io.BytesIO(pdf_bytes),
