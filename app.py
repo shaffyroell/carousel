@@ -13,7 +13,8 @@ import os
 import tempfile
 from flask import Flask, request, send_file, jsonify
 from playwright.async_api import async_playwright
-from PIL import Image
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 import io
 
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v14"
+VERSION = "v15"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -91,24 +92,20 @@ async def html_to_pdf_bytes(html: str) -> bytes:
         await browser.close()
         await pw.stop()
 
-    # Convert PNGs to PDF using Pillow
-    images = []
-    for b in png_buffers:
-        img = Image.open(io.BytesIO(b))
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        images.append(img)
-
+    # Build PDF with reportlab — one image per page, exact dimensions
     out = io.BytesIO()
-    images[0].save(
-        out,
-        format="PDF",
-        save_all=True,
-        append_images=images[1:],
-        resolution=144,
-    )
+    c = canvas.Canvas(out, pagesize=(SLIDE_WIDTH, SLIDE_HEIGHT))
+    for i, b in enumerate(png_buffers):
+        c.drawImage(
+            ImageReader(io.BytesIO(b)),
+            0, 0,
+            width=SLIDE_WIDTH,
+            height=SLIDE_HEIGHT,
+        )
+        c.showPage()
+    c.save()
     pdf_bytes = out.getvalue()
-    logger.info(f"PDF built: {len(pdf_bytes)} bytes, {len(images)} pages")
+    logger.info(f"PDF built: {len(pdf_bytes)} bytes, {len(png_buffers)} pages")
     return pdf_bytes
 
 
