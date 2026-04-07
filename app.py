@@ -8,7 +8,6 @@ POST /convert
 """
 
 import asyncio
-import img2pdf
 import logging
 import os
 import tempfile
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v12"
+VERSION = "v13"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -41,7 +40,6 @@ async def render_page(html: str):
     browser = await p.chromium.launch(args=CHROMIUM_ARGS)
     page = await browser.new_page(
         viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
-        device_scale_factor=2,
     )
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False,
                                      mode="w", encoding="utf-8") as f:
@@ -65,7 +63,6 @@ async def render_page(html: str):
 
 async def html_to_pdf_bytes(html: str) -> bytes:
     page, browser, pw = await render_page(html)
-    png_buffers = []
     try:
         slide_count = await page.evaluate(
             "document.querySelectorAll('.slide').length"
@@ -78,26 +75,35 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             )
             raise ValueError(f"No .slide elements found. Body: {body}")
 
-        for i in range(slide_count):
-            scroll_y = i * SLIDE_HEIGHT
-            await page.evaluate(f"window.scrollTo(0, {scroll_y})")
-            # Wait two animation frames so paint is flushed
-            await page.evaluate(
-                "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
-            )
-            png = await page.screenshot(
-                clip={"x": 0, "y": 0, "width": SLIDE_WIDTH, "height": SLIDE_HEIGHT}
-            )
-            png_buffers.append(png)
-            logger.info(f"Slide {i + 1}/{slide_count} screenshotted ({len(png)} bytes)")
+        # Inject print styles so each .slide becomes its own PDF page
+        await page.evaluate(f"""() => {{
+            const s = document.createElement('style');
+            s.textContent = `
+                @page {{ size: {SLIDE_WIDTH}px {SLIDE_HEIGHT}px; margin: 0; }}
+                body {{ margin: 0; padding: 0; }}
+                .slide {{
+                    page-break-after: always;
+                    break-after: page;
+                    width: {SLIDE_WIDTH}px !important;
+                    height: {SLIDE_HEIGHT}px !important;
+                    overflow: hidden;
+                    box-sizing: border-box;
+                    display: block;
+                }}
+            `;
+            document.head.appendChild(s);
+        }}""")
+
+        pdf_bytes = await page.pdf(
+            width=f"{SLIDE_WIDTH}px",
+            height=f"{SLIDE_HEIGHT}px",
+            print_background=True,
+        )
+        logger.info(f"PDF generated: {len(pdf_bytes)} bytes for {slide_count} slides")
+        return pdf_bytes
     finally:
         await browser.close()
         await pw.stop()
-
-    return img2pdf.convert(
-        [io.BytesIO(b) for b in png_buffers],
-        layout_fun=img2pdf.get_fixed_dpi_layout_fun((144, 144))
-    )
 
 
 def extract_html(request):
