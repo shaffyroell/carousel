@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v9"
+VERSION = "v10"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -120,13 +120,21 @@ def debug():
             try:
                 page = await browser.new_page(
                     viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
-                    device_scale_factor=2
+                    device_scale_factor=1
                 )
                 await page.set_content(html, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(500)
                 slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
-                body_preview = await page.evaluate("document.body.innerHTML.substring(0, 1000)")
+                body_preview = await page.evaluate("document.body.innerHTML.substring(0, 500)")
                 title = await page.title()
-                return {"slide_count": slide_count, "body_preview": body_preview, "title": title}
+                # Capture first slide as base64 PNG so we can see what Playwright renders
+                first_slide_b64 = None
+                slides = await page.query_selector_all(".slide")
+                if slides:
+                    png = await page.screenshot(clip={"x": 0, "y": 0, "width": SLIDE_WIDTH, "height": SLIDE_HEIGHT})
+                    import base64
+                    first_slide_b64 = base64.b64encode(png).decode()
+                return {"slide_count": slide_count, "body_preview": body_preview, "title": title, "first_slide_png_base64": first_slide_b64}
             finally:
                 await browser.close()
 
