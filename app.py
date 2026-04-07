@@ -29,43 +29,50 @@ async def html_to_pdf_bytes(html: str) -> bytes:
     png_buffers = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--no-sandbox"])
-        page = await browser.new_page(
-            viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
-            device_scale_factor=2
-        )
+        browser = await p.chromium.launch(args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ])
+        try:
+            page = await browser.new_page(
+                viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
+                device_scale_factor=2
+            )
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-            f.write(html)
-            tmp_path = Path(f.name)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+                    f.write(html)
+                    tmp_path = Path(f.name)
 
-        logger.info(f"Wrote HTML to {tmp_path} ({len(html)} chars)")
+                logger.info(f"Wrote HTML to {tmp_path} ({len(html)} chars)")
 
-        await page.goto(f"file://{tmp_path.resolve()}")
-        await page.wait_for_load_state("networkidle", timeout=20000)
+                await page.goto(f"file://{tmp_path.resolve()}")
+                await page.wait_for_load_state("networkidle", timeout=20000)
 
-        slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
-        logger.info(f"Slide count via JS: {slide_count}")
+                slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
+                logger.info(f"Slide count via JS: {slide_count}")
 
-        slides = await page.query_selector_all(".slide")
-        logger.info(f"Slides found via Playwright: {len(slides)}")
+                slides = await page.query_selector_all(".slide")
+                logger.info(f"Slides found via Playwright: {len(slides)}")
 
-        if not slides:
-            body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
-            logger.error(f"No slides found. Body preview: {body_html}")
+                if not slides:
+                    body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
+                    logger.error(f"No slides found. Body preview: {body_html}")
+                    raise ValueError(f"No .slide elements found. Body preview: {body_html}")
+
+                for i, slide in enumerate(slides):
+                    png_bytes = await slide.screenshot()
+                    png_buffers.append(png_bytes)
+                    logger.info(f"Slide {i+1} screenshotted")
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+        finally:
             await browser.close()
-            raise ValueError(f"No .slide elements found. Body preview: {body_html}")
-
-        for i, slide in enumerate(slides):
-            png_bytes = await slide.screenshot()
-            png_buffers.append(png_bytes)
-            logger.info(f"Slide {i+1} screenshotted")
-
-        await browser.close()
-        tmp_path.unlink(missing_ok=True)
 
     pdf_bytes = img2pdf.convert(
-        png_buffers,
+        [io.BytesIO(b) for b in png_buffers],
         layout_fun=img2pdf.get_fixed_dpi_layout_fun((144, 144))
     )
 
@@ -86,7 +93,9 @@ def convert():
     else:
         html = request.data.decode("utf-8")
 
-    logger.info(f"HTML length: {len(html)}, Has .slide: {'class=\"slide\"' in html or \"class='slide'\" in html}")
+    has_slide = 'class="slide"' in html or "class='slide'" in html
+    logger.info(f"HTML length: {len(html)}, Has .slide: {has_slide}")
+    logger.info(f"HTML preview (first 300 chars): {html[:300]}")
 
     if not html or len(html) < 50:
         return jsonify({"error": "Empty or missing HTML"}), 400
