@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v5"
+VERSION = "v6"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -43,18 +43,31 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
             logger.info(f"Slide count via JS: {slide_count}")
 
-            slides = await page.query_selector_all(".slide")
-            logger.info(f"Slides found via Playwright: {len(slides)}")
-
-            if not slides:
+            if not slide_count:
                 body_html = await page.evaluate("document.body.innerHTML.substring(0, 500)")
                 logger.error(f"No slides found. Body preview: {body_html}")
                 raise ValueError(f"No .slide elements found. Body preview: {body_html}")
 
+            # Expand viewport to full page height so all slides are painted by Chromium.
+            # Without this, off-screen slides render as blank.
+            await page.set_viewport_size({
+                "width": SLIDE_WIDTH,
+                "height": slide_count * SLIDE_HEIGHT,
+            })
+
+            slides = await page.query_selector_all(".slide")
+            logger.info(f"Slides found via Playwright: {len(slides)}")
+
             for i, slide in enumerate(slides):
-                png_bytes = await slide.screenshot()
+                bbox = await slide.bounding_box()
+                png_bytes = await page.screenshot(clip={
+                    "x": bbox["x"],
+                    "y": bbox["y"],
+                    "width": SLIDE_WIDTH,
+                    "height": SLIDE_HEIGHT,
+                })
                 png_buffers.append(png_bytes)
-                logger.info(f"Slide {i+1} screenshotted")
+                logger.info(f"Slide {i+1} screenshotted at y={bbox['y']}")
         finally:
             await browser.close()
 
