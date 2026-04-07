@@ -57,14 +57,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             raise ValueError(f"No .slide elements found. Body preview: {body_html}")
 
         for i, slide in enumerate(slides):
-            png_bytes = await slide.screenshot(
-                clip={
-                    "x": 0,
-                    "y": i * SLIDE_HEIGHT,
-                    "width": SLIDE_WIDTH,
-                    "height": SLIDE_HEIGHT
-                }
-            )
+            png_bytes = await slide.screenshot()
             png_buffers.append(png_bytes)
             logger.info(f"Slide {i+1} screenshotted")
 
@@ -120,4 +113,6 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
