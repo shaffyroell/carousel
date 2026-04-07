@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v6"
+VERSION = "v7"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -39,6 +39,7 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             )
 
             await page.set_content(html, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(500)  # allow layout/paint to finish
 
             slide_count = await page.evaluate("document.querySelectorAll('.slide').length")
             logger.info(f"Slide count via JS: {slide_count}")
@@ -48,26 +49,23 @@ async def html_to_pdf_bytes(html: str) -> bytes:
                 logger.error(f"No slides found. Body preview: {body_html}")
                 raise ValueError(f"No .slide elements found. Body preview: {body_html}")
 
-            # Expand viewport to full page height so all slides are painted by Chromium.
-            # Without this, off-screen slides render as blank.
-            await page.set_viewport_size({
-                "width": SLIDE_WIDTH,
-                "height": slide_count * SLIDE_HEIGHT,
-            })
-
             slides = await page.query_selector_all(".slide")
             logger.info(f"Slides found via Playwright: {len(slides)}")
 
             for i, slide in enumerate(slides):
-                bbox = await slide.bounding_box()
+                # Scroll each slide to the top of the viewport, then screenshot.
+                # Expanding the viewport to full page height causes Chromium to
+                # fail rendering at 2x DPR (canvas too large → blank output).
+                await slide.scroll_into_view_if_needed()
+                await page.wait_for_timeout(100)
                 png_bytes = await page.screenshot(clip={
-                    "x": bbox["x"],
-                    "y": bbox["y"],
+                    "x": 0,
+                    "y": 0,
                     "width": SLIDE_WIDTH,
                     "height": SLIDE_HEIGHT,
                 })
                 png_buffers.append(png_bytes)
-                logger.info(f"Slide {i+1} screenshotted at y={bbox['y']}")
+                logger.info(f"Slide {i+1} screenshotted")
         finally:
             await browser.close()
 
