@@ -23,9 +23,17 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v18"
+VERSION = "v19"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
+
+# Screenshot pixel density. At 2x each 1080x1350 slide is a 2160x2700 bitmap
+# (~23 MB decoded in-browser); on a small (e.g. 512 MB) instance a multi-slide
+# render plus Chromium itself can exceed the memory limit, the worker is
+# OOM-killed mid-request, and the proxy returns 502. Native for a 1080px
+# Instagram target is 1x, so 2 is oversampling — drop SLIDE_SCALE to 1 if the
+# service is memory-constrained. Env-configurable so it needs no code change.
+DEVICE_SCALE = float(os.environ.get("SLIDE_SCALE", "2"))
 
 
 CHROMIUM_ARGS = [
@@ -43,7 +51,7 @@ async def render_page(html: str):
     browser = await p.chromium.launch(args=CHROMIUM_ARGS)
     page = await browser.new_page(
         viewport={"width": SLIDE_WIDTH, "height": SLIDE_HEIGHT},
-        device_scale_factor=2,
+        device_scale_factor=DEVICE_SCALE,
     )
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False,
                                      mode="w", encoding="utf-8") as f:

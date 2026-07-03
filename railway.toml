@@ -1,0 +1,14 @@
+# Railway service config.
+# healthcheckPath: a new deploy is only promoted once /health returns 200, so a
+#   container that fails to boot (bad build, port not bound, import error) never
+#   becomes the live version silently serving 502s.
+# restartPolicy: if the process exits (crash / OOM-kill), restart it instead of
+#   leaving a dead container behind the proxy.
+[build]
+builder = "dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

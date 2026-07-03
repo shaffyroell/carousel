@@ -12,4 +12,11 @@ COPY app.py .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --timeout 120 app:app"]
+# --threads: a slow /convert render no longer blocks /health and other
+#   requests on the single worker (that's why even GET / was returning 502).
+# --max-requests: recycle the worker periodically so leaked Chromium/node
+#   subprocesses and their memory can't accumulate until the box OOMs.
+# --graceful-timeout: give an in-flight render a moment to unwind on recycle.
+# WEB_CONCURRENCY stays 1 by default to bound peak Chromium memory; bump it
+#   only on an instance with headroom (each worker can launch its own browser).
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers ${WEB_CONCURRENCY:-1} --threads ${WEB_THREADS:-4} --timeout 120 --graceful-timeout 30 --max-requests 40 --max-requests-jitter 10 app:app"]
