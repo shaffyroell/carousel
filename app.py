@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-VERSION = "v17"
+VERSION = "v18"
 SLIDE_WIDTH  = 1080
 SLIDE_HEIGHT = 1350
 
@@ -50,9 +50,21 @@ async def render_page(html: str):
         f.write(html)
         tmp_path = f.name
     try:
-        await page.goto(f"file://{tmp_path}", wait_until="networkidle", timeout=30000)
+        # "load" (not "networkidle") so a single dangling external request
+        # — a webfont/image that never settles — can't hang the worker for
+        # the full timeout and take the (single-worker) service down with it.
+        await page.goto(f"file://{tmp_path}", wait_until="load", timeout=30000)
     finally:
         os.unlink(tmp_path)
+
+    # Wait for webfonts so text isn't captured in a fallback face.
+    try:
+        await page.evaluate(
+            "() => (document.fonts && document.fonts.ready) "
+            "? document.fonts.ready.then(() => true) : true"
+        )
+    except Exception:
+        pass
 
     # Log page dimensions for debugging
     dims = await page.evaluate(
@@ -69,9 +81,8 @@ async def html_to_pdf_bytes(html: str) -> bytes:
     page, browser, pw = await render_page(html)
     png_buffers = []
     try:
-        slide_count = await page.evaluate(
-            "document.querySelectorAll('.slide').length"
-        )
+        slides = await page.query_selector_all(".slide")
+        slide_count = len(slides)
         logger.info(f"Slide count: {slide_count}")
 
         if not slide_count:
@@ -80,14 +91,18 @@ async def html_to_pdf_bytes(html: str) -> bytes:
             )
             raise ValueError(f"No .slide elements found. Body: {body}")
 
-        for i in range(slide_count):
-            await page.evaluate(f"window.scrollTo(0, {i * SLIDE_HEIGHT})")
+        # Screenshot each slide by its real bounding box. Scrolling to a
+        # fixed i*SLIDE_HEIGHT and clipping a viewport rectangle only lines
+        # up when slides are perfectly stacked with no body margin, no gaps
+        # between slides, and every slide is exactly SLIDE_HEIGHT tall — any
+        # real-world spacing makes later slides drift and bleed into each
+        # other. An element screenshot is immune to all of that.
+        for i, slide in enumerate(slides):
+            await slide.scroll_into_view_if_needed()
             await page.evaluate(
                 "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
             )
-            png = await page.screenshot(
-                clip={"x": 0, "y": 0, "width": SLIDE_WIDTH, "height": SLIDE_HEIGHT}
-            )
+            png = await slide.screenshot()
             png_buffers.append(png)
             logger.info(f"Slide {i + 1}/{slide_count} captured ({len(png)} bytes)")
     finally:
@@ -170,14 +185,15 @@ def screenshot_endpoint():
         try:
             if full_page:
                 return await page.screenshot(full_page=True)
-            scroll_y = slide_index * SLIDE_HEIGHT
-            await page.evaluate(f"window.scrollTo(0, {scroll_y})")
+            slides = await page.query_selector_all(".slide")
+            if not slides:
+                raise ValueError("No .slide elements found")
+            slide = slides[min(slide_index, len(slides) - 1)]
+            await slide.scroll_into_view_if_needed()
             await page.evaluate(
                 "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
             )
-            return await page.screenshot(
-                clip={"x": 0, "y": 0, "width": SLIDE_WIDTH, "height": SLIDE_HEIGHT}
-            )
+            return await slide.screenshot()
         finally:
             await browser.close()
             await pw.stop()
